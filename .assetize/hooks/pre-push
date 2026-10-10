@@ -23,6 +23,8 @@ forbidden+='|(^|/)(\.claude|\.assetize)/'
 # Any file or directory named .cursor*, .windsurf* or .aider* (e.g. .cursorrules, .cursorignore, .windsurf/)
 forbidden+='|(^|/)\.(cursor|windsurf|aider)[^/]*(/|$)'
 forbidden+='|^\.github/copilot-instructions\.md$'
+# Assetize fork-only tooling (image build, workflows)
+forbidden+='|^assetize/|^\.github/workflows/assetize-'
 
 violations=""
 
