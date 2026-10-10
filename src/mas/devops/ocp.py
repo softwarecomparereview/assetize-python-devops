@@ -634,8 +634,11 @@ def listInstances(dynClient: DynamicClient, apiVersion: str, kind: str) -> list:
     instances = api.get().to_dict()["items"]
     if len(instances) > 0:
         logger.info(f"There are {len(instances)} {kind} instances installed on this cluster:")
-    for instance in instances:
-        logger.info(f" * {instance['metadata']['name']} v{instance.get('status', {}).get('versions', {}).get('reconciled', 'N/A')}")
+        for instance in instances:
+            # Instances that have never reconciled may have no status, or a status without versions (ibm-mas/cli#1944)
+            name = (instance.get("metadata") or {}).get("name", "unknown")
+            reconciledVersion = ((instance.get("status") or {}).get("versions") or {}).get("reconciled") or "unknown"
+            logger.info(f" * {name} v{reconciledVersion}")
     else:
         logger.info(f"There are no {kind} instances installed on this cluster")
     return instances
