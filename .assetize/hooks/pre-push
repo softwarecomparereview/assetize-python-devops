@@ -18,9 +18,10 @@ if [[ "$remote_url" =~ $fork_pattern ]]; then
 fi
 
 # Paths that must never reach an upstream repository
-forbidden='(^|/)(AGENTS\.md|CLAUDE\.md|CLAUDE\.local\.md|GEMINI\.md|\.cursorrules|\.windsurfrules)$'
-forbidden+='|(^|/)(\.claude|\.cursor|\.windsurf|\.assetize)/'
-forbidden+='|(^|/)\.aider'
+forbidden='(^|/)(AGENTS\.md|CLAUDE\.md|CLAUDE\.local\.md|GEMINI\.md)$'
+forbidden+='|(^|/)(\.claude|\.assetize)/'
+# Any file or directory named .cursor*, .windsurf* or .aider* (e.g. .cursorrules, .cursorignore, .windsurf/)
+forbidden+='|(^|/)\.(cursor|windsurf|aider)[^/]*(/|$)'
 forbidden+='|^\.github/copilot-instructions\.md$'
 
 violations=""
