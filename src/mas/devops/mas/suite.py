@@ -61,85 +61,123 @@ def isAirgapInstall(dynClient: DynamicClient, checkICSP: bool = False) -> bool:
         return len(masIDMS.items) + len(aiserviceIDMS.items) > 0
 
 
+# Known storage providers, identified by storage class name: (provider, providerName, rwoClassName, rwxClassName)
+# A provider is recognised when either of its storage classes exists, but each class is only
+# returned if it actually exists in the cluster (see ibm-mas/cli#1520).
+KNOWN_STORAGE_PROVIDERS = [
+    ("ibmc", "IBMCloud ROKS Classic", "ibmc-block-gold", "ibmc-file-gold-gid"),
+    ("ibmc-vpc", "IBMCloud ROKS VPC", "ibmc-vpc-block-10iops-tier", "ibmc-vpc-file-1000-iops"),
+    ("ocs", "OpenShift Container Storage", "ocs-storagecluster-ceph-rbd", "ocs-storagecluster-cephfs"),
+    ("ocs-external", "OpenShift Container Storage (External)", "ocs-external-storagecluster-ceph-rbd", "ocs-external-storagecluster-cephfs"),
+    ("longhorn", "Longhorn", "longhorn", "longhorn"),
+    ("nfs", "NFS Client", "nfs-client", "nfs-client"),
+    ("azure", "Azure Managed", "managed-premium", "azurefiles-premium"),
+    ("aws", "AWS GP3", "gp3-csi", "efs"),
+]
+
+# Ceph CSI provisioners are named "<operator-namespace>.<driver>.csi.ceph.com", e.g.
+# "rook-ceph.rbd.csi.ceph.com" (Rook) or "openshift-storage.cephfs.csi.ceph.com" (ODF)
+CEPH_RBD_PROVISIONER_SUFFIX = ".rbd.csi.ceph.com"
+CEPH_CEPHFS_PROVISIONER_SUFFIX = ".cephfs.csi.ceph.com"
+
+
+def _getCephStorageClasses(storageClasses: list) -> SimpleNamespace:
+    """
+    Detect Ceph (Rook-Ceph or ODF) storage classes by their CSI provisioner (ibm-mas/cli#2634).
+
+    RBD (block) classes are used for RWO and CephFS classes for RWX. When several classes use
+    the same driver, the one annotated as the cluster default is preferred, otherwise the first.
+    """
+    result = SimpleNamespace(provider=None, providerName=None, rwo=None, rwx=None)
+    rbdClasses = []
+    cephfsClasses = []
+    for storageClass in storageClasses:
+        provisioner = getattr(storageClass, "provisioner", None)
+        if not isinstance(provisioner, str):
+            continue
+        if provisioner.endswith(CEPH_RBD_PROVISIONER_SUFFIX):
+            rbdClasses.append(storageClass)
+        elif provisioner.endswith(CEPH_CEPHFS_PROVISIONER_SUFFIX):
+            cephfsClasses.append(storageClass)
+
+    def isDefault(storageClass) -> bool:
+        annotations = getattr(storageClass.metadata, "annotations", None)
+        try:
+            return str(annotations["storageclass.kubernetes.io/is-default-class"]).lower() == "true"
+        except (KeyError, TypeError, AttributeError):
+            return False
+
+    def pick(classes: list):
+        if not classes:
+            return None
+        defaults = [sc for sc in classes if isDefault(sc)]
+        return (defaults or classes)[0]
+
+    rwo = pick(rbdClasses)
+    rwx = pick(cephfsClasses)
+    if rwo is None and rwx is None:
+        return result
+
+    provisioner = (rwo or rwx).provisioner
+    if provisioner.startswith("openshift-storage."):
+        result.provider = "ocs"
+        result.providerName = "OpenShift Data Foundation"
+    else:
+        result.provider = "rook-ceph"
+        result.providerName = "Rook Ceph"
+    result.rwo = rwo.metadata.name if rwo is not None else None
+    result.rwx = rwx.metadata.name if rwx is not None else None
+    return result
+
+
 def getDefaultStorageClasses(dynClient: DynamicClient) -> SimpleNamespace:
     """
     Detect and return default storage classes for the cluster environment.
 
     This function identifies the storage provider (IBM Cloud, OCS, Azure, AWS, etc.)
     by examining available storage classes and returns appropriate RWO (ReadWriteOnce)
-    and RWX (ReadWriteMany) storage class names.
+    and RWX (ReadWriteMany) storage class names.  If no storage class with a well-known
+    name is found, Ceph CSI provisioners (Rook-Ceph / ODF) are detected: RBD for RWO and
+    CephFS for RWX.
 
     Args:
         dynClient (DynamicClient): OpenShift dynamic client for cluster API interactions.
 
     Returns:
         SimpleNamespace: Object with attributes:
-                        - provider (str): Provider identifier (e.g., "ibmc", "ocs", "aws")
+                        - provider (str): Provider identifier (e.g., "ibmc", "ocs", "aws", "rook-ceph")
                         - providerName (str): Human-readable provider name
-                        - rwo (str): Storage class name for RWO volumes
-                        - rwx (str): Storage class name for RWX volumes
+                        - rwo (str): Storage class name for RWO volumes, None if the provider's
+                          RWO class does not exist in the cluster
+                        - rwx (str): Storage class name for RWX volumes, None if the provider's
+                          RWX class does not exist in the cluster
                         All attributes are None if no recognized provider is found.
     """
     result = SimpleNamespace(provider=None, providerName=None, rwo=None, rwx=None)
 
-    # Iterate through storage classes until we find one that we recognize
-    # We make an assumption that if one of the paired classes if available, both will be
     storageClasses = getStorageClasses(dynClient)
+    existingNames = set()
     for storageClass in storageClasses:
-        if storageClass.metadata.name in ["ibmc-block-gold", "ibmc-file-gold-gid"]:
-            result.provider = "ibmc"
-            result.providerName = "IBMCloud ROKS Classic"
-            result.rwo = "ibmc-block-gold"
-            result.rwx = "ibmc-file-gold-gid"
+        name = getattr(storageClass.metadata, "name", None)
+        if isinstance(name, str):
+            existingNames.add(name)
+
+    # Iterate through storage classes until we find one that we recognize, then only return
+    # the paired classes that actually exist in the cluster
+    for storageClass in storageClasses:
+        for provider, providerName, rwoName, rwxName in KNOWN_STORAGE_PROVIDERS:
+            if storageClass.metadata.name in [rwoName, rwxName]:
+                result.provider = provider
+                result.providerName = providerName
+                result.rwo = rwoName if rwoName in existingNames else None
+                result.rwx = rwxName if rwxName in existingNames else None
+                break
+        if result.provider is not None:
             break
-        elif storageClass.metadata.name in ["ibmc-vpc-block-10iops-tier", "ibmc-vpc-file-1000-iops"]:
-            result.provider = "ibmc-vpc"
-            result.providerName = "IBMCloud ROKS VPC"
-            result.rwo = "ibmc-vpc-block-10iops-tier"
-            result.rwx = "ibmc-vpc-file-1000-iops"
-            break
-        elif storageClass.metadata.name in [
-            "ocs-storagecluster-ceph-rbd",
-            "ocs-storagecluster-cephfs",
-        ]:
-            result.provider = "ocs"
-            result.providerName = "OpenShift Container Storage"
-            result.rwo = "ocs-storagecluster-ceph-rbd"
-            result.rwx = "ocs-storagecluster-cephfs"
-            break
-        elif storageClass.metadata.name in [
-            "ocs-external-storagecluster-ceph-rbd",
-            "ocs-external-storagecluster-cephfs",
-        ]:
-            result.provider = "ocs-external"
-            result.providerName = "OpenShift Container Storage (External)"
-            result.rwo = "ocs-external-storagecluster-ceph-rbd"
-            result.rwx = "ocs-external-storagecluster-cephfs"
-            break
-        elif storageClass.metadata.name == "longhorn":
-            result.provider = "longhorn"
-            result.providerName = "Longhorn"
-            result.rwo = "longhorn"
-            result.rwx = "longhorn"
-            break
-        elif storageClass.metadata.name == "nfs-client":
-            result.provider = "nfs"
-            result.providerName = "NFS Client"
-            result.rwo = "nfs-client"
-            result.rwx = "nfs-client"
-            break
-        elif storageClass.metadata.name in ["managed-premium", "azurefiles-premium"]:
-            result.provider = "azure"
-            result.providerName = "Azure Managed"
-            result.rwo = "managed-premium"
-            result.rwx = "azurefiles-premium"
-            break
-        elif storageClass.metadata.name in ["gp3-csi", "efs"]:
-            result.provider = "aws"
-            result.providerName = "AWS GP3"
-            result.rwo = "gp3-csi"
-            result.rwx = "efs"
-            break
+
+    if result.provider is None:
+        result = _getCephStorageClasses(storageClasses)
+
     logger.debug(f"Default storage class: {result}")
     return result
 

@@ -138,6 +138,29 @@ spec:
     - name: db2_data_storage_accessmode
       value: "{{ db2_data_storage_accessmode }}"
   {%- endif %}
+
+    # Dependencies - Db2 - Storage Class (any left empty use storage_class_rwo/rwx)
+    # -------------------------------------------------------------------------
+  {%- if db2_meta_storage_class is defined and db2_meta_storage_class != "" %}
+    - name: db2_meta_storage_class
+      value: "{{ db2_meta_storage_class }}"
+  {%- endif %}
+  {%- if db2_data_storage_class is defined and db2_data_storage_class != "" %}
+    - name: db2_data_storage_class
+      value: "{{ db2_data_storage_class }}"
+  {%- endif %}
+  {%- if db2_backup_storage_class is defined and db2_backup_storage_class != "" %}
+    - name: db2_backup_storage_class
+      value: "{{ db2_backup_storage_class }}"
+  {%- endif %}
+  {%- if db2_logs_storage_class is defined and db2_logs_storage_class != "" %}
+    - name: db2_logs_storage_class
+      value: "{{ db2_logs_storage_class }}"
+  {%- endif %}
+  {%- if db2_temp_storage_class is defined and db2_temp_storage_class != "" %}
+    - name: db2_temp_storage_class
+      value: "{{ db2_temp_storage_class }}"
+  {%- endif %}
   {%- if db2_affinity_key is defined and db2_affinity_key != "" %}
 
     # Dependencies - Db2 - Node Scheduling
